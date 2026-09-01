@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import sqlite3
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from cherry_memory_ledger.models import (  # noqa: E402
 app = FastAPI(
     title="Cherry Memory Ledger",
     description="Load-bearing accounting memory across genuinely fresh sessions.",
-    version="0.2.0",
+    version="0.2.1",
 )
 
 MAX_SNAPSHOT_BYTES = 3 * 1024 * 1024
@@ -134,9 +135,19 @@ def _treatment_dict(treatment: AccountingTreatment) -> dict[str, object]:
     }
 
 
+def _build_commit() -> str:
+    """Expose the deployed commit for the hackathon's on-screen proof."""
+    return os.getenv("VERCEL_GIT_COMMIT_SHA", "local")
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": "cherry-memory-ledger", "memory": "sibyl"}
+    return {
+        "status": "ok",
+        "service": "cherry-memory-ledger",
+        "memory": "sibyl",
+        "commit_sha": _build_commit(),
+    }
 
 
 @app.post("/api/memory/remember")
@@ -199,6 +210,8 @@ def recommend(payload: RecommendPayload) -> dict[str, object]:
         "treatment": _treatment_dict(outcome.treatment),
         "rationale": outcome.rationale,
         "sibyl_reads": ["get_entity", "search_entities"],
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "commit_sha": _build_commit(),
     }
     if outcome.memory:
         response["memory"] = {
@@ -289,6 +302,7 @@ def home() -> str:
     .result-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     .fact { background:rgba(255,255,255,.7); border-radius:11px; padding:12px; }
     .fact small { display:block; color:var(--muted); margin-bottom:4px; }
+    .proof-fact { border:1px solid rgba(23,107,77,.2); }
     .debug { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px; }
     .debug-card { border:1px solid var(--line); border-radius:17px; padding:18px; background:#fff; }
     .debug-card h3 { margin:0 0 10px; font-size:15px; }
@@ -476,6 +490,7 @@ async function runRecommendation() {
   try {
     const data = await api('/api/memory/recommend', {memory_snapshot:snapshot(), transaction:transaction('b','session-b-'+Date.now())});
     const t=data.treatment; const m=data.memory;
+    const commit=(data.commit_sha || 'local').slice(0,7);
     result.className=`result visible ${data.used_memory ? 'memory' : 'default'}`;
     result.innerHTML = `
       <div class="result-top"><div><div class="signal">${data.used_memory ? 'Recalled from Sibyl Memory' : 'No memory · default path'}</div><div class="big-category">${escapeHtml(t.category)}</div></div><div>${data.used_memory ? '🧠 ✓' : '⚠️'}</div></div>
@@ -484,6 +499,7 @@ async function runRecommendation() {
         <div class="fact"><small>Reconciliation</small>${escapeHtml(t.reconciliation_action || 'Not specified')}</div>
         <div class="fact"><small>Why Cherry chose this</small>${escapeHtml(data.rationale)}</div>
         <div class="fact"><small>Memory trace</small>${m ? `<code>${escapeHtml(m.memory_id)}</code><br>${escapeHtml(m.approved_by_role)} · ${escapeHtml(m.approved_at)}` : 'No prior decision available'}</div>
+        <div class="fact proof-fact"><small>Fresh-session proof · required for judging</small>Observed <strong>${escapeHtml(data.observed_at)}</strong><br>Deployed commit <code>${escapeHtml(commit)}</code></div>
       </div>`;
     toast(data.used_memory ? 'Fresh session changed by recalled Sibyl memory.' : 'No memory found: generic baseline used.');
   } catch (error) { result.className='result visible default'; result.textContent=error.message; toast(error.message); }
