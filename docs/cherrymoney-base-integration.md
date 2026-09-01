@@ -71,7 +71,7 @@ The accounting application remains authoritative. Sibyl does not move money and 
 4. The existing `BankLedgerPostingService` posts the transaction.
 5. When **Remember with Sibyl** is selected, the accountant-approved allocation and scope are sent to this public memory service.
 6. The service writes the decision to Sibyl and returns the updated local-first SQLite snapshot.
-7. The private Cherry Money application encrypts that opaque snapshot using Laravel application encryption and stores it on the company record.
+7. The private Cherry Money application encrypts that opaque snapshot using Laravel application encryption and stores it in a dedicated `sibyl_memory_snapshots` row keyed by Cherry Money company id.
 
 A memory-service failure does **not** roll back a successful accounting posting.
 
@@ -79,11 +79,17 @@ A memory-service failure does **not** roll back a successful accounting posting.
 
 1. A later Cherry Money request receives another related bank debit.
 2. Cherry Money calculates its normal `SmartBankMatcher` baseline first.
-3. The company’s encrypted Sibyl snapshot is decrypted server-side.
+3. The company's encrypted Sibyl state row is loaded and decrypted server-side.
 4. The snapshot is sent to this stateless public service.
 5. A newly constructed Sibyl client recalls the accountant-approved decision.
 6. When a memory matches, Cherry shows the remembered allocation and provenance alongside/in place of the generic heuristic.
 7. The existing Cherry Money posting workflow remains responsible for any accounting action.
+
+## Why a dedicated state table?
+
+The legacy Cherry Money `company` row is already very wide, so storing a several-megabyte encrypted SQLite snapshot directly on it is not a safe MySQL design. Reusing an unrelated audit/settings table would blur its semantics. The hackathon integration therefore introduces one small company-scoped state table.
+
+Cherry Money's checksum-bound historical Phase-4 fixture remains unchanged. The private integration explicitly registers `sibyl_memory_snapshots` as a post-baseline zero-row table so it remains covered by current schema inventory, migration-ledger, emptiness and FK-coverage validation without rewriting the old fixture.
 
 ## Load-bearing counterfactual
 
@@ -103,7 +109,7 @@ The commercial Cherry Money codebase is private. Judges still need a public repo
 
 The public Vercel demo carries the Sibyl SQLite snapshot in browser `localStorage` solely because Vercel functions have ephemeral filesystems and the demo must be independently reproducible.
 
-The Cherry Money integration does **not** use browser storage for accounting memory. It stores the returned snapshot encrypted with the company inside Cherry Money’s database and decrypts it server-side only for memory calls.
+The Cherry Money integration does **not** use browser storage for accounting memory. It stores the returned snapshot encrypted in the company-scoped `sibyl_memory_snapshots` table and decrypts it server-side only for memory calls.
 
 ## Partner stacks
 
