@@ -2,167 +2,158 @@
 
 **Accounting decisions that compound, instead of disappearing.**
 
-Cherry Memory Ledger is a Sibyl Labs hackathon prototype for an accounting agent that can carry accountant-approved corrections, VAT treatments, reconciliation decisions, and business-specific rules into genuinely fresh sessions.
+Cherry Memory Ledger is a Sibyl Labs hackathon prototype for an accounting agent that remembers accountant-approved corrections, VAT treatments, reconciliation decisions, and business-specific rules across genuinely fresh sessions.
 
-The core hypothesis is simple: a correction should not disappear when a chat or process ends. A later transaction should be handled differently because the agent remembers what the accountant previously approved.
-
-## Hackathon objective
-
-Build and demonstrate this load-bearing memory loop:
-
-1. An accountant corrects or approves an accounting decision.
-2. The decision, context, rationale, and scope are persisted to Sibyl Memory.
-3. The original session/process is ended.
-4. A genuinely fresh session receives a new but related transaction.
-5. The agent recalls the relevant approved memory without the user re-entering it.
-6. The recalled memory changes the categorisation, VAT treatment, reconciliation action, or review decision.
-
-If memory is deleted or disabled, the prototype must lose that learned accounting behaviour and revert to a generic/default decision path. That counterfactual is intentional: Sibyl Memory is meant to be on the critical path, not an optional profile feature.
+The core behaviour is intentionally easy to test: correct an AWS transaction once, end the session, then present a new AWS transaction. With Sibyl Memory, Cherry recalls the approved treatment and changes its decision. Delete the memory and the same transaction falls back to the generic baseline.
 
 ## What breaks when memory is deleted?
 
-Without Sibyl Memory, Cherry loses the accountant-approved corrections, VAT treatments and reconciliation decisions that determine how future transactions are processed. Fresh sessions therefore revert to generic guesses, repeat previously corrected mistakes, and cannot consistently apply the business's approved accounting treatment.
+Without Sibyl Memory, Cherry loses the accountant-approved corrections, VAT treatments and reconciliation decisions that determine how future transactions are processed. Fresh sessions therefore revert to generic guesses and repeat previously corrected bookkeeping mistakes.
 
-## Fresh-session acceptance criteria
+That counterfactual is implemented in the web demo: the **Delete memory & run counterfactual** action removes the Sibyl SQLite snapshot, and the exact same Session B decision returns to `General Expenses`.
 
-The first end-to-end milestone is complete only when all of the following are demonstrable:
+## Current implementation status
 
-- **Persist:** Session A stores an accountant-approved correction with enough context to reuse it safely.
-- **Fresh session:** Session A is terminated and Session B starts without carrying in-memory application state from Session A.
-- **Recall:** Session B retrieves the relevant prior decision from Sibyl Memory for a new transaction.
-- **Changed decision:** the recalled decision materially changes the outcome versus the no-memory/default path.
-- **Traceability:** the demo can show which memory influenced the decision and why.
-- **Conflict handling:** where the new transaction does not safely match the remembered rule, the agent flags it for review rather than blindly applying it.
+The core Sibyl loop is now implemented on the `feat/sibyl-demo-ui` build:
 
-Target walkthrough text for the eventual submission form:
+- **Persist:** accountant-approved treatment is written to a Sibyl WARM entity with `MemoryClient.set_entity(...)`.
+- **Audit:** the approval is also recorded in Sibyl's COLD journal using `write_event(...)`.
+- **Fresh session:** the web page reloads, destroying JavaScript/session state, and the next API request constructs a brand-new `MemoryClient`.
+- **Recall:** known suppliers use `get_entity(...)`; related descriptions can fall back to Sibyl FTS5 `search_entities(...)`.
+- **Changed decision:** recalled memory replaces the generic treatment with the accountant-approved category/VAT/reconciliation treatment.
+- **Counterfactual:** an empty/deleted Sibyl memory produces the generic decision instead.
+- **Traceability:** the UI shows the logical memory key, approval role/time, rationale, and which Sibyl operations were exercised.
 
-> **Persist:** Accountant-approved transaction corrections, VAT treatments, supplier-specific reconciliation rules and the context/rationale behind each decision.  
-> **Recall (fresh session):** When a new transaction arrives, Cherry retrieves relevant approved history for that supplier or a semantically similar transaction without the user re-explaining it.  
-> **Changes the agent's decision by:** Cherry applies the remembered accounting/VAT treatment when the remembered scope matches, or flags a conflict for human review instead of repeating the previous mistake.
+## Judge walkthrough
+
+> **Persist:** An accountant changes an AWS transaction from `General Expenses` to `Software & Cloud Services`, approves a scoped VAT rule, and Cherry persists that structured decision as a Sibyl entity plus audit event.  
+> **Recall (fresh session):** Session A is ended and the page reloads. Session B creates a new Sibyl client and recalls the AWS rule from the persisted SQLite memory without the user re-entering it.  
+> **Changes the agent's decision by:** A related `AWS EMEA SARL` transaction is categorised as `Software & Cloud Services` with the remembered VAT/reconciliation treatment. Deleting the memory makes the same transaction revert to `General Expenses`.
+
+## Load-bearing code pointers
+
+The critical memory path is deliberately concentrated in one adapter so judges can verify it quickly:
+
+- **Sibyl writes:** `src/cherry_memory_ledger/memory_gateway.py` → `SibylMemoryGateway.persist_accounting_decision(...)`
+  - `set_entity(...)` stores the current accountant-approved supplier rule.
+  - `write_event(...)` appends the approval to the journal/audit history.
+- **Sibyl reads:** `src/cherry_memory_ledger/memory_gateway.py` → `SibylMemoryGateway.recall_relevant_decisions(...)`
+  - `get_entity(...)` performs exact supplier recall.
+  - `search_entities(...)` performs FTS5 recall when an exact supplier key is unavailable.
+- **Decision change:** `src/cherry_memory_ledger/decision_engine.py` → `decide(...)`
+  - no memory → generic `General Expenses` baseline
+  - recalled memory → accountant-approved treatment
+
+Removing or bypassing `SibylMemoryGateway` therefore materially changes the product's accounting result.
+
+## Fresh-session persistence on Vercel
+
+Sibyl Memory is local-first and SQLite-backed. Vercel function filesystems are ephemeral, so the demo does **not** pretend that `/tmp` is durable.
+
+Instead, after every Sibyl write the API checkpoints Sibyl's WAL and returns the actual SQLite file as a base64 snapshot. The browser keeps that small demo snapshot in `localStorage`. A later request — including after a page reload or serverless cold start — writes those bytes to a fresh temporary file and constructs a brand-new official `MemoryClient` against it.
+
+This is intentionally transparent in `app.py` (`_restore_snapshot` / `_encode_snapshot`). The memory schema, entity write, journal write, exact recall and FTS5 recall are all performed by `sibyl-memory-client`; browser storage is only the transport that carries Sibyl's local-first SQLite file between stateless Vercel requests.
+
+For production Cherry Money, this demo transport would be replaced by an appropriately secured persistence model rather than storing accounting memory in browser localStorage.
 
 ## Memory model
 
-The prototype is designed to remember decisions, not just free-text notes. A memory record is expected to carry fields such as:
+`AccountingDecisionMemory` records structured decisions rather than a free-text chat transcript:
 
-- business identifier (demo-safe / non-sensitive)
-- supplier or counterparty entity
-- transaction fingerprint and description
+- demo-safe business identifier
+- supplier/counterparty
+- source transaction and description
 - original proposed treatment
 - accountant-approved treatment
 - VAT treatment and evidence requirements
-- reconciliation mapping/action
+- reconciliation action
 - rationale
-- approval role and timestamp
-- scope/conditions for reuse
-- confidence/review status
-- supersedes/superseded-by metadata for rule evolution
+- approval role/time
+- reuse scope conditions
+- active/superseded/review status
+- tags and supersession metadata
 
-See `src/cherry_memory_ledger/models.py` for the initial domain model.
+For a supplier, the Sibyl WARM entity acts as the current source of truth. Re-approving the same supplier upserts that entity, while the COLD journal preserves an append-only audit event.
 
-## Sibyl Memory integration status
+## Sibyl primitives actually exercised
 
-**Status: scaffold only — live Sibyl reads/writes are not implemented yet.**
+This build currently claims only the operations that exist in code:
 
-The intended integration boundary is deliberately explicit so judges and reviewers can find the memory path easily:
+- **entities / structured memory** — WARM `set_entity`
+- **recall** — `get_entity`
+- **search** — FTS5 `search_entities`
+- **journal / temporal audit trail** — COLD `write_event`
 
-- Planned memory write: `src/cherry_memory_ledger/memory_gateway.py` → `SibylMemoryGateway.persist_accounting_decision(...)`
-- Planned memory read: `src/cherry_memory_ledger/memory_gateway.py` → `SibylMemoryGateway.recall_relevant_decisions(...)`
+We do **not** claim embedding-based semantic search, reflection, consolidation, or time-travel until those behaviours are genuinely implemented and demonstrated.
 
-Those methods currently fail loudly with `NotImplementedError`. They will only be replaced once the Sibyl Memory client/API shape has been validated during the hackathon. We will not claim a primitive or integration until it exists in code and is exercised in the demo.
+## Web demo flow
 
-### Planned Sibyl primitives
+1. **Session A:** synthetic `AMZN AWS EMEA 120.00 GBP` starts on the generic `General Expenses` path.
+2. Accountant approves `Software & Cloud Services` plus the VAT/evidence/reconciliation rule.
+3. Click **Approve & save to Sibyl Memory**.
+4. Click **End Session A → Start Session B**. The page reloads.
+5. **Session B:** synthetic `AWS EMEA SARL 240.00 GBP` arrives with no re-explanation.
+6. Click **Ask Cherry in this fresh session** and inspect the recalled memory trace.
+7. Click **Delete memory & run counterfactual** and observe the category revert to `General Expenses`.
 
-Initial targets, subject to implementation and verification:
+All demo transactions are synthetic; this prototype is not tax or accounting advice.
 
-- recall
-- entities
-- semantic search
-- temporal / time-travel for superseded accounting rules
-- reflection for turning corrections into reusable candidate rules
+## Tests
 
-Only primitives actually implemented and demonstrated will be declared in the final submission.
+`tests/test_memory_acceptance.py` now exercises the real Sibyl client:
 
-## Partner stacks
+- creates Session A and persists an accountant decision
+- discards Session A
+- constructs a new gateway/client against the persisted Sibyl SQLite file
+- recalls the rule in Session B
+- verifies that the result changes to `Software & Cloud Services`
+- runs the same transaction against an empty Sibyl DB and verifies the counterfactual `General Expenses` result
+- verifies FTS5 recall for a related GitHub description when no supplier field is provided
 
-Partner integrations are stretch goals after the core Sibyl loop works.
-
-### Base — planned, not implemented
-
-Potential use: anchor a cryptographic fingerprint of an accountant-approved decision or audit event on Base while keeping the detailed accounting context in Sibyl Memory. This repository does **not** currently contain an on-chain action and will not claim the Base multiplier unless an actual transaction is implemented and demonstrated.
-
-### Virtuals Protocol — planned, not implemented
-
-Potential use: coordinate a bookkeeping agent and an accounting-review agent around memory-backed exceptions. This repository does **not** currently contain a Virtuals integration and will not claim it unless real runtime coordination is implemented and demonstrated.
-
-## Prior Work declaration
-
-Cherry Money, its accounting/open-banking product direction, brand, and general accounting concepts pre-date this hackathon. The `cherry-memory-ledger` repository, the Sibyl Memory integration, the fresh-session memory proof, and hackathon-specific implementation in this repository are intended to be work created during the Sibyl Labs build window.
-
-Where any pre-existing Cherry Money component is later reused, it will be identified clearly in the README and/or pull request rather than presented as new hackathon work.
-
-## Repository layout
-
-```text
-.
-├── docs/
-│   ├── architecture.md
-│   └── demo-script.md
-├── src/cherry_memory_ledger/
-│   ├── __init__.py
-│   ├── memory_gateway.py
-│   └── models.py
-├── tests/
-│   └── test_memory_acceptance.py
-├── .gitignore
-├── LICENSE
-├── pyproject.toml
-└── README.md
-```
-
-## Local setup
-
-Python 3.11+ is the initial target.
+Run locally:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-```
-
-Sibyl's hackathon setup flow currently starts with the CLI/MCP package:
-
-```bash
-pip install 'sibyl-memory-cli[mcp]'
-sibyl init
-sibyl setup
-sibyl status
-```
-
-The application integration will be added only after the client/API contract is confirmed.
-
-## Tests
-
-The acceptance-test file is intentionally a skipped scaffold today. It documents the exact behaviour the first functional implementation must satisfy:
-
-```bash
 pytest
+uvicorn app:app --reload
 ```
 
-No passing Sibyl integration test is claimed yet.
+## Repository layout
 
-## Demo target
+```text
+.
+├── app.py                         # FastAPI API + judge-facing demo UI
+├── docs/
+│   ├── architecture.md
+│   └── demo-script.md
+├── src/cherry_memory_ledger/
+│   ├── __init__.py
+│   ├── decision_engine.py         # memory/no-memory decision fork
+│   ├── memory_gateway.py          # real Sibyl writes + reads
+│   └── models.py
+├── tests/
+│   └── test_memory_acceptance.py
+├── LICENSE
+└── pyproject.toml
+```
 
-The demo will centre on one visible behaviour:
+## Partner stacks
 
-1. Session A misclassifies a demo AWS transaction.
-2. An accountant corrects it and approves a scoped VAT treatment.
-3. The correction is persisted.
-4. Session A is fully terminated.
-5. Session B starts fresh with a related AWS transaction.
-6. Cherry recalls the prior approved decision and changes its outcome.
-7. A no-memory/counterfactual path shows that the learned behaviour disappears when memory is unavailable.
+### Base — planned, not implemented
 
-See `docs/demo-script.md` for the recording plan.
+Potential next step: anchor a cryptographic fingerprint of an accountant-approved memory/audit event on Base while keeping detailed accounting context in Sibyl Memory. No Base multiplier is claimed until a real on-chain action is implemented and exercised.
+
+### Virtuals Protocol — planned, not implemented
+
+Potential next step: coordinate a bookkeeping agent and an accounting-review agent around memory-backed exceptions. No Virtuals integration is claimed yet.
+
+## Prior Work declaration
+
+Cherry Money, its accounting/open-banking product direction, brand, and general accounting concepts pre-date this hackathon. The `cherry-memory-ledger` repository, Sibyl Memory adapter, fresh-session proof, browser-carried Sibyl SQLite demo transport, judge UI, tests and hackathon-specific implementation are work created during the Sibyl Labs build window.
+
+Any pre-existing Cherry Money component reused later will be identified explicitly rather than presented as new hackathon work.
 
 ## Licence
 
