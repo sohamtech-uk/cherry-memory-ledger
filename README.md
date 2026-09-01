@@ -91,7 +91,7 @@ The private hackathon integration uses existing Cherry Money functionality rathe
 4. Existing `BankLedgerPostingService` performs the accounting posting.
 5. If **Remember with Sibyl** is selected, the approved allocation and scope are sent to this service.
 6. This service updates Sibyl Memory and returns the local-first SQLite snapshot.
-7. Cherry Money encrypts that opaque snapshot at rest with Laravel application encryption and keeps it with the company record.
+7. Cherry Money encrypts that opaque snapshot at rest with Laravel application encryption and stores it in a dedicated `sibyl_memory_snapshots` row keyed by Cherry Money company id.
 
 Memory failure never rolls back a successful ledger posting.
 
@@ -100,13 +100,15 @@ Memory failure never rolls back a successful ledger posting.
 On a later request:
 
 1. Cherry Money first calculates its ordinary `SmartBankMatcher` baseline.
-2. The company's encrypted Sibyl snapshot is decrypted server-side.
+2. The company's encrypted `sibyl_memory_snapshots` state row is loaded and decrypted server-side.
 3. This stateless service receives the snapshot and constructs a new Sibyl client.
 4. The relevant accountant decision is recalled.
 5. When a memory matches, the remembered allocation and provenance enrich/replace the generic suggestion.
 6. Any final accounting action still goes through Cherry Money's existing workflow.
 
 This makes the no-memory comparison clean: **same Cherry Money product, same transaction, same existing matcher — only the learned accountant memory changes.**
+
+The dedicated state table is intentional: Cherry Money's legacy `company` row is already very wide, while reusing an unrelated audit/settings table would weaken its semantics. The private integration preserves the checksum-bound historical Phase-4 fixture and explicitly validates the new table as post-baseline zero-row schema.
 
 ## Public Vercel demo
 
@@ -131,7 +133,7 @@ Sibyl Memory is local-first and SQLite-backed, while Vercel function filesystems
 
 All actual memory operations are still performed by the official `sibyl-memory-client`; browser storage is only the transport used to make the public serverless proof durable across reloads/cold starts.
 
-**The real Cherry Money integration does not use browser storage for accounting memory.** It encrypts the returned Sibyl snapshot and persists it server-side with the owning company.
+**The real Cherry Money integration does not use browser storage for accounting memory.** It encrypts the returned Sibyl snapshot and persists it server-side in a company-scoped `sibyl_memory_snapshots` row.
 
 ## Memory model
 
