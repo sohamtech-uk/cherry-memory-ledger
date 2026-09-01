@@ -12,7 +12,9 @@ license = {file = "LICENSE"}
 authors = [
   {name = "Sohamtech UK contributors"}
 ]
-dependencies = []
+dependencies = [
+  "fastapi>=0.115,<1.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -25,3 +27,6 @@ packages = ["src/cherry_memory_ledger"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.vercel]
+entrypoint = "app.py"
