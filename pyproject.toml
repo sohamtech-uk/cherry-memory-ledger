@@ -14,11 +14,13 @@ authors = [
 ]
 dependencies = [
   "fastapi>=0.115,<1.0",
+  "sibyl-memory-client>=0.4.4,<1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "uvicorn>=0.30",
 ]
 
 [tool.hatch.build.targets.wheel]
